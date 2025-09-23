@@ -3,46 +3,27 @@
 
 const workflows = [
   {
-    id: 'lead-capture',
-    name: 'Lead Capture',
+    id: 'strategy-generator',
+    name: 'Strategy Generator',
     description:
-      'Collect lead information and send it to your CRM via n8n. Includes validation and success feedback.',
+      'Generate trading strategies based on market conditions.',
     color: 'from-primary-500 to-indigo-600',
-    webhookUrl: import.meta.env.VITE_N8N_WEBHOOK_LEAD_CAPTURE || 'https://n8n.example.com/webhook/lead-capture',
+    webhookUrl: import.meta.env.VITE_N8N_WEBHOOK_STRATEGY_GENERATOR || 'https://n8n.example.com/webhook/strategy-generator',
     fields: [
       { key: 'name', label: 'Full Name', type: 'text', required: true, placeholder: 'Jane Doe' },
       { key: 'email', label: 'Email', type: 'email', required: true, placeholder: 'jane@example.com' },
-      { key: 'company', label: 'Company', type: 'text', required: false, placeholder: 'Acme Inc.' },
-      { key: 'message', label: 'Message', type: 'textarea', required: false, placeholder: 'Tell us about your needs...' },
+      { key: 'projectTitle', label: 'Project Title', type: 'text', required: true, placeholder: 'National Day Social Campaign' },
+      { key: 'objectives', label: 'Objectives', type: 'textarea', required: true, placeholder: 'Awareness, engagement, conversion...' },
+      { key: 'audience', label: 'Audience', type: 'textarea', required: true, placeholder: 'Saudi youth, families, public sector stakeholders' },
+      { key: 'deliverables', label: 'Deliverables', type: 'textarea', required: true, placeholder: 'Social captions, 15s scripts, idea deck' },
+      { key: 'projectGoals', label: 'Project Goals', type: 'textarea', required: true, placeholder: 'Drive engagement with respectful national tone' },
+      { key: 'channels', label: 'Channels', type: 'text', required: false, placeholder: 'X, Instagram, YouTube' },
+      { key: 'deadline', label: 'Deadline', type: 'date', required: false, placeholder: 'YYYY-MM-DD' },
+      // { key: 'attachments', label: 'Attachments / Links', type: 'text', required: false, placeholder: 'https://drive.google.com/…' },
+      { key: 'internalNotes', label: 'Internal Notes (PM/CTL)', type: 'textarea', required: false, placeholder: 'Notes, constraints, must-include items' },
+      { key: 'category', label: 'Category (optional)', type: 'select', options: ['campaign','script','captions','presentation','other'], required: false },
     ],
-  },
-  {
-    id: 'support-ticket',
-    name: 'Support Ticket',
-    description:
-      'Create a support ticket and notify your team. Automatically routes to the correct queue.',
-    color: 'from-emerald-500 to-teal-600',
-    webhookUrl: import.meta.env.VITE_N8N_WEBHOOK_SUPPORT_TICKET || 'https://n8n.example.com/webhook/support-ticket',
-    fields: [
-      { key: 'subject', label: 'Subject', type: 'text', required: true, placeholder: 'Issue summary' },
-      { key: 'priority', label: 'Priority', type: 'select', required: true, options: ['Low', 'Medium', 'High'] },
-      { key: 'email', label: 'Requester Email', type: 'email', required: true, placeholder: 'you@example.com' },
-      { key: 'details', label: 'Details', type: 'textarea', required: true, placeholder: 'Describe the issue in detail' },
-    ],
-  },
-  {
-    id: 'feedback',
-    name: 'Product Feedback',
-    description: 'Collect feedback and send to your product board with sentiment tagging.',
-    color: 'from-pink-500 to-rose-600',
-    webhookUrl: import.meta.env.VITE_N8N_WEBHOOK_FEEDBACK || 'https://n8n.example.com/webhook/feedback',
-    fields: [
-      { key: 'name', label: 'Your Name', type: 'text', required: false },
-      { key: 'email', label: 'Email', type: 'email', required: false },
-      { key: 'category', label: 'Category', type: 'select', required: true, options: ['Bug', 'Feature', 'UX', 'Other'] },
-      { key: 'feedback', label: 'Feedback', type: 'textarea', required: true },
-    ],
-  },
+  }
 ];
 
 export default workflows;
