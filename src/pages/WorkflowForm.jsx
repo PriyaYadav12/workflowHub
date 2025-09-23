@@ -44,18 +44,17 @@ export default function WorkflowForm() {
         const text = await res.text();
         throw new Error(text || `Request failed (${res.status})`);
       }
-      // Try to parse JSON first; fallback to text or raw
-      const contentType = res.headers.get('content-type') || '';
+      // Robust parsing: read as text, then try JSON; handle empty bodies
+      const text = await res.text();
       let data = null;
-      if (contentType.includes('application/json')) {
-        data = await res.json();
-      } else {
-        const text = await res.text();
+      if (text && text.trim().length > 0) {
         try {
           data = JSON.parse(text);
         } catch {
           data = text;
         }
+      } else {
+        data = null; // No content returned
       }
       setResult(data);
       setSuccess('Submitted successfully!');
@@ -118,7 +117,7 @@ export default function WorkflowForm() {
 
     // Support either [{ output: {...} }] or { output: {...} } or just {...}
     const top = Array.isArray(data) ? data[0] : data;
-    const output = top?.output ?? data;
+    const output = top?.output ?? top;
 
     if (typeof output !== 'object' || output === null) {
       return (
