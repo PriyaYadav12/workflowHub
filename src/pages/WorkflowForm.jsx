@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import workflows from '../data/workflows';
@@ -12,6 +12,25 @@ export default function WorkflowForm() {
   const [success, setSuccess] = useState('');
   const [result, setResult] = useState(null);
   const [showForm, setShowForm] = useState(true);
+  // Track original payload to include it again with user feedback
+  const [lastPayload, setLastPayload] = useState(null);
+  // Feedback UI state
+  const [feedback, setFeedback] = useState('');
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [feedbackSuccess, setFeedbackSuccess] = useState('');
+  // Ref to the result section for auto-scrolling
+  const resultRef = useRef(null);
+
+  // When result updates, scroll to the result section
+  useEffect(() => {
+    if (result && resultRef.current) {
+      // Let the DOM paint before scrolling
+      requestAnimationFrame(() => {
+        resultRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+  }, [result]);
 
   if (!workflow) {
     return (
@@ -30,9 +49,11 @@ export default function WorkflowForm() {
     setError('');
     setSuccess('');
     setLoading(true);
+    setResult(null);
 
     const formData = new FormData(e.currentTarget);
     const payload = Object.fromEntries(formData.entries());
+    setLastPayload(payload);
 
     try {
       const res = await fetch(workflow.webhookUrl, {
@@ -56,6 +77,7 @@ export default function WorkflowForm() {
       } else {
         data = null; // No content returned
       }
+      console.log("data", data);
       setResult(data);
       setSuccess('Submitted successfully!');
       // Auto-hide the form after result is available
@@ -67,6 +89,52 @@ export default function WorkflowForm() {
       setError(err?.message || 'Submission failed.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Handles feedback submission: send previous payload merged with user feedback
+  async function onSubmitFeedback(e) {
+    e.preventDefault();
+    setFeedbackError('');
+    setFeedbackSuccess('');
+    setFeedbackLoading(true);
+
+    try {
+      const merged = {
+        ...(lastPayload || {}),
+        user_feedback: feedback,
+        feedback_run: true,
+      };
+
+      const res = await fetch(workflow.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(merged),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Request failed (${res.status})`);
+      }
+      const text = await res.text();
+      let data = null;
+      if (text && text.trim().length > 0) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = text;
+        }
+      } else {
+        data = null; // No content returned
+      }
+      console.log("data", data);
+      setResult(data);
+      setFeedbackSuccess('Feedback submitted. Thank you!');
+      // Clear the feedback after success
+      setFeedback('');
+    } catch (err) {
+      setFeedbackError(err?.message || 'Failed to submit feedback.');
+    } finally {
+      setFeedbackLoading(false);
     }
   }
 
@@ -114,138 +182,195 @@ export default function WorkflowForm() {
   // Nicely render the structured workflow output
   function renderOutput(data) {
     if (!data) return null;
-
-    // Support either [{ output: {...} }] or { output: {...} } or just {...}
+    // Flatten input structure
     const top = Array.isArray(data) ? data[0] : data;
-    const output = top?.output ?? top;
+    // Resilient parser: handles string, object, and double-encoded JSON strings
+    const tryParseOnce = (val) => {
+      if (typeof val === 'string') {
+        try { return JSON.parse(val); } catch { return null; }
+      }
+      return (val && typeof val === 'object') ? val : null;
+    };
+    const deepParseJson = (val, maxDepth = 2) => {
+      let out = tryParseOnce(val);
+      if (!out) return typeof val === 'object' ? val : null;
+      let depth = 1;
+      // If parsing yields a string that is itself JSON, parse again (up to maxDepth)
+      while (depth < maxDepth && typeof out === 'string') {
+        const next = tryParseOnce(out);
+        if (!next) break;
+        out = next;
+        depth++;
+      }
+      return out;
+    };
+    // Extract JSON text from markdown code fences or mixed prose
+    const extractJsonFromText = (text) => {
+      if (typeof text !== 'string') return null;
+      // Try fenced code block first: ```json ... ``` or ``` ... ```
+      const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      const candidateText = fenceMatch ? fenceMatch[1] : text;
+      // Try to locate a JSON object by braces
+      const firstBrace = candidateText.indexOf('{');
+      const lastBrace = candidateText.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const jsonSlice = candidateText.slice(firstBrace, lastBrace + 1);
+        try { return JSON.parse(jsonSlice); } catch { /* ignore */ }
+      }
+      return null;
+    };
+    // Candidate payload may be nested under `output`
+    const candidate = top?.output ?? top;
+    console.log("candidate", candidate);
+    console.log("draftOutput", candidate?.draftOutput);
+    // Prefer explicit draftOutput/taskOutput if present; otherwise, fallback to using candidate directly
+    const draftParsed = candidate?.draftOutput ? (deepParseJson(candidate.draftOutput) ?? null) : null;
+    console.log("draftParsed", draftParsed);
+    const draftOutput = draftParsed ?? (
+      // If candidate looks like a draft (has social/video/ideas keys), use it as-is
+      (candidate)
+        ? candidate
+        : {}
+    );
 
-    if (typeof output !== 'object' || output === null) {
+    // Parse taskOutput robustly: plain JSON, double-encoded, or fenced JSON within prose
+    let taskParsed = null;
+    if (candidate?.taskOutput != null) {
+      taskParsed = deepParseJson(candidate.taskOutput) ?? extractJsonFromText(String(candidate.taskOutput));
+    }
+    console.log("taskParsed", taskParsed);
+    const taskOutput = taskParsed ?? (
+      // If candidate directly contains tasks, wrap them
+      (candidate)
+        ? { tasks: candidate.tasks, task_breakdown: candidate.task_breakdown }
+        : {}
+    );
+    console.log("draftOutput",draftOutput);
+    console.log("taskOutput", taskOutput);
+    // Helper: Flexible render of any object (for DraftOutput)
+    const renderObjectFlex = (obj) => {
+      console.log("obj", obj);
+      if (!obj || typeof obj !== 'object') return null;
+  
       return (
-        <div className="mt-8 rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6 text-sm">
-          <pre className="whitespace-pre-wrap break-words">{String(output)}</pre>
+        <div className="space-y-6">
+          {Object.entries(obj).map(([key, value]) => {
+            if (Array.isArray(value)) {
+              return (
+                <div key={key}>
+                  <h3 className="text-lg font-semibold mb-2 capitalize">{key.replace(/_/g, ' ')}</h3>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {value.map((item, idx) => (
+                      <div key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4 text-sm space-y-2">
+                        {typeof item === 'object' ? (
+                          Object.entries(item).map(([subKey, subValue]) => (
+                            <div key={subKey}>
+                              <div className="text-xs uppercase text-gray-500 mb-1">{subKey}</div>
+                              <pre dir={subKey.toLowerCase().includes("arabic") ? "rtl" : "ltr"} className="whitespace-pre-wrap leading-relaxed">
+                                {String(subValue)}
+                              </pre>
+                            </div>
+                          ))
+                        ) : (
+                          <pre className="whitespace-pre-wrap">{String(item)}</pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+  
+            // Render primitives or nested objects
+            return (
+              <div key={key}>
+                <h3 className="text-lg font-semibold mb-1 capitalize">{key.replace(/_/g, ' ')}</h3>
+                {typeof value === 'object' ? (
+                  <div className="ml-4 space-y-2 text-sm">
+                    {Object.entries(value).map(([subKey, subValue]) => (
+                      <div key={subKey}>
+                        <span className="font-medium">{subKey}:</span> {String(subValue)}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm">{String(value)}</p>
+                )}
+              </div>
+            );
+          })}
         </div>
       );
-    }
-
-    const posts = output.social_media_posts || [];
-    const videos = output.video_scripts || [];
-    const ideas = output.mini_idea_deck || [];
-    const tasks = output.task_breakdown || [];
-
+    };
+  
     return (
       <div className="mt-10 space-y-10">
-        {/* Social Media Posts */}
-        {posts.length > 0 && (
-          <section>
-            <h2 className="text-xl font-semibold mb-4">Social Media Posts</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {posts.map((p, idx) => (
-                <div key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-medium uppercase tracking-wide text-gray-500">Post {idx + 1}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-200 px-2 py-0.5 text-xs">AR</span>
-                      <span className="rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-200 px-2 py-0.5 text-xs">EN</span>
-                    </div>
-                  </div>
-                  <div className="space-y-3 text-sm">
-                    {p.arabic && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">Arabic</div>
-                        <p dir="rtl" className="leading-relaxed">{p.arabic}</p>
-                      </div>
-                    )}
-                    {p.english && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">English</div>
-                        <p className="leading-relaxed">{p.english}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+        {/* DraftOutput Card */}
+        {draftOutput && Object.keys(draftOutput).length > 0 && (
+          <section className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6">
+            <h2 className="text-xl font-semibold mb-4">Draft Output</h2>
+            {renderObjectFlex(draftOutput)}
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm text-gray-600 dark:text-gray-300 select-none">Raw JSON</summary>
+              <pre className="mt-2 text-xs whitespace-pre-wrap break-words bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded p-3">{JSON.stringify(draftOutput, null, 2)}</pre>
+            </details>
           </section>
         )}
-
-        {/* Video Scripts */}
-        {videos.length > 0 && (
-          <section>
-            <h2 className="text-xl font-semibold mb-4">Video Scripts</h2>
-            <div className="space-y-4">
-              {videos.map((v, idx) => (
-                <div key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-                  <div className="text-xs uppercase text-gray-500 mb-3">Script {idx + 1}</div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {v.arabic && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">Arabic</div>
-                        <pre dir="rtl" className="text-sm whitespace-pre-wrap leading-relaxed">{v.arabic}</pre>
+  
+        {/* TaskOutput Card */}
+        {(() => {
+          const taskList = taskOutput?.task_breakdown || taskOutput?.Task_Breakdown || taskOutput?.Tasks || taskOutput?.tasks || [];
+          if (!Array.isArray(taskList) || taskList.length === 0) return null;
+          return (
+            <section className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6">
+              <h2 className="text-xl font-semibold mb-2">Task Output</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">Actionable tasks</p>
+              <ol className="space-y-3">
+                {taskList.map((t, idx) => {
+                  const title = t.name || t.task || t.task_name || t.title || t.Description || `Task ${idx + 1}`;
+                  const desc = t.description || t.task_description || t.details || t.summary || t.Description || '';
+                  const assignee = t.assigned_to || t.assignee || t.Responsible || '';
+                  const due = t.due_date || t.deadline || t['Due Date'] || '';
+                  // Prepare a list of extra fields to show as metadata (excluding ones we rendered)
+                  const omitKeys = new Set(['name','task','task_name','title','Description','description','task_description','details','summary','assigned_to','assignee','Responsible','due_date','deadline','Due Date']);
+                  const extras = Object.entries(t).filter(([k]) => !omitKeys.has(k));
+                  return (
+                    <li key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
+                      <div className="flex items-start gap-3">
+                        <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white text-xs font-medium">{idx + 1}</span>
+                        <div>
+                          <div className="font-medium">{title}</div>
+                          {desc && (
+                            <div className="text-sm text-gray-600 dark:text-gray-300 mt-1">{desc}</div>
+                          )}
+                          {assignee && (
+                            <div className="text-xs text-gray-400">Assigned to: {assignee}</div>
+                          )}
+                          {due && <div className="text-xs text-gray-400">Due: {due}</div>}
+                          {extras.length > 0 && (
+                            <div className="mt-2 grid gap-1 text-xs text-gray-500 dark:text-gray-400">
+                              {extras.map(([k, v]) => (
+                                <div key={k}><span className="uppercase">{k}:</span> {String(v)}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                    {v.english && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">English</div>
-                        <pre className="text-sm whitespace-pre-wrap leading-relaxed">{v.english}</pre>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Mini Idea Deck */}
-        {ideas.length > 0 && (
-          <section>
-            <h2 className="text-xl font-semibold mb-4">Mini Idea Deck</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {ideas.map((i, idx) => (
-                <div key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-                  <div className="text-xs uppercase text-gray-500 mb-3">Idea {idx + 1}</div>
-                  <div className="space-y-3">
-                    {i.arabic && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">Arabic</div>
-                        <pre dir="rtl" className="text-sm whitespace-pre-wrap leading-relaxed">{i.arabic}</pre>
-                      </div>
-                    )}
-                    {i.english && (
-                      <div>
-                        <div className="text-xs uppercase text-gray-500 mb-1">English</div>
-                        <pre className="text-sm whitespace-pre-wrap leading-relaxed">{i.english}</pre>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Task Breakdown */}
-        {tasks.length > 0 && (
-          <section>
-            <h2 className="text-xl font-semibold mb-4">Task Breakdown</h2>
-            <ol className="space-y-3">
-              {tasks.map((t, idx) => (
-                <li key={idx} className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-4">
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary-600 text-white text-xs font-medium">{idx + 1}</span>
-                    <div>
-                      <div className="font-medium">{t.task || `Step ${idx + 1}`}</div>
-                      {t.details && <div className="text-sm text-gray-600 dark:text-gray-300 mt-0.5">{t.details}</div>}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
+                    </li>
+                  );
+                })}
+              </ol>
+              <details className="mt-4">
+                <summary className="cursor-pointer text-sm text-gray-600 dark:text-gray-300 select-none">Raw JSON</summary>
+                <pre className="mt-2 text-xs whitespace-pre-wrap break-words bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded p-3">{JSON.stringify(taskOutput, null, 2)}</pre>
+              </details>
+            </section>
+          );
+        })()}
       </div>
     );
   }
+  
 
   return (
     <Layout>
@@ -319,8 +444,58 @@ export default function WorkflowForm() {
 
         {/* Render the workflow result output, if available (outside the sliding form) */}
         {result && (
-          <div className="pt-6 border-t border-gray-100 dark:border-gray-800">
+          <div ref={resultRef} className="pt-6 border-t border-gray-100 dark:border-gray-800 space-y-6">
             {renderOutput(result)}
+
+            {/* Feedback section */}
+            <section className="rounded-lg border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-6">
+              <h2 className="text-xl font-semibold mb-2">Share Feedback</h2>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">Let us know what you think about the generated result. Your feedback will be submitted with your original inputs.</p>
+              <form onSubmit={onSubmitFeedback} className="space-y-4">
+                <div className="space-y-1">
+                  <label htmlFor="user_feedback" className="block text-sm font-medium">Feedback</label>
+                  <textarea
+                    id="user_feedback"
+                    name="user_feedback"
+                    className="block w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 min-h-28"
+                    placeholder="Write your feedback here..."
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    disabled={!lastPayload || feedbackLoading}
+                  />
+                </div>
+
+                {feedbackError && (
+                  <div className="rounded-lg border border-rose-200 dark:border-rose-900/50 bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-200 px-4 py-3 text-sm">
+                    {feedbackError}
+                  </div>
+                )}
+                {feedbackSuccess && (
+                  <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-200 px-4 py-3 text-sm">
+                    {feedbackSuccess}
+                  </div>
+                )}
+                {!lastPayload && (
+                  <div className="text-xs text-amber-600 dark:text-amber-300">Feedback is disabled until you submit the form at least once.</div>
+                )}
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="submit"
+                    disabled={feedbackLoading || !feedback.trim() || !lastPayload}
+                    className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-br from-primary-500 to-indigo-600 text-white px-4 py-2 text-sm font-medium shadow hover:shadow-md disabled:opacity-60"
+                  >
+                    {feedbackLoading && (
+                      <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                      </svg>
+                    )}
+                    Submit Feedback
+                  </button>
+                </div>
+              </form>
+            </section>
           </div>
         )}
       </div>
