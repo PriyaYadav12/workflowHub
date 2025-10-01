@@ -145,8 +145,8 @@ export default function StrategyResultPanel({ result, submitTime, onResultUpdate
         feedback: feedback.trim(),
         timestamp: new Date().toISOString(),
       };
-
-      const response = await fetch(StrategyGeneratorUrl, {
+      const webhookUrl = localStorage.getItem("strategy-generator:webhook") || StrategyGeneratorUrl;
+      const response = await fetch(webhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
