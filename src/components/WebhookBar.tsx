@@ -56,7 +56,7 @@ export default function WebhookBar({ title, subtitle, storageKey, defaultUrl }: 
         <div className="flex items-center gap-2">
           {hasUrl ? (
             <span className="hidden sm:inline text-xs text-emerald-300/90 bg-emerald-400/10 border border-emerald-300/20 px-2 py-1 rounded-lg">
-              Test URL set
+              Webhook Url set
             </span>
           ) : (
             <span className="hidden sm:inline text-xs text-white/70 bg-white/5 border border-white/10 px-2 py-1 rounded-lg">

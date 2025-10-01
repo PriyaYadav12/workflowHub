@@ -16,8 +16,29 @@ type WebhookResult = {
   };
 };
 
+// ✅ Utility function: remove all `ar` keys and keep only `en`
+function filterEnglishOnly(obj: unknown): unknown {
+  if (Array.isArray(obj)) {
+    return obj.map(filterEnglishOnly);
+  } else if (typeof obj === "object" && obj !== null) {
+    const result: Record<string, unknown> = {};
+    for (const key in obj) {
+      if (key === "ar") continue; // 🚫 skip Arabic keys
+      if (key === "en") {
+        return filterEnglishOnly((obj as Record<string, unknown>)[key]); // ✅ directly return English content
+      }
+      result[key] = filterEnglishOnly((obj as Record<string, unknown>)[key]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 export async function generateStrategyPdf(result: unknown) {
-  const webhookResult = result as WebhookResult;
+  // Clean the result to remove Arabic keys and keep only English content
+  const cleanedResult = filterEnglishOnly(result);
+  console.log(cleanedResult);
+  const webhookResult = cleanedResult as WebhookResult;
   
   if (!webhookResult?.output) {
     throw new Error("Invalid result format");
@@ -225,29 +246,72 @@ export async function generateStrategyPdf(result: unknown) {
   doc.save(fileName);
 }
 
-function formatDeliverableContent(item: unknown): string {
+function formatDeliverableContent(item: unknown, indentLevel: number = 0): string {
+  const indent = "  ".repeat(indentLevel);
+  
   if (typeof item === "string") {
     try {
       const parsed = JSON.parse(item);
-      return formatDeliverableContent(parsed);
+      return formatDeliverableContent(parsed, indentLevel);
     } catch {
       return item;
     }
   }
 
   if (Array.isArray(item)) {
-    return item.map((sub, i) => `${i + 1}. ${formatDeliverableContent(sub)}`).join("\n");
+    return item
+      .map((sub, i) => {
+        if (typeof sub === "object" && sub !== null) {
+          const formatted = formatDeliverableContent(sub, indentLevel);
+          return formatted ? `${indent}${i + 1}. ${formatted}` : "";
+        }
+        return `${indent}${i + 1}. ${String(sub)}`;
+      })
+      .filter(line => line.trim().length > 0)
+      .join("\n");
   }
 
   if (typeof item === "object" && item !== null) {
     return Object.entries(item)
-      .map(([key, value]) => {
-        const formattedKey = key.replace(/_/g, " ").toUpperCase();
-        const formattedValue = typeof value === "object" 
-          ? JSON.stringify(value, null, 2) 
-          : String(value);
-        return `${formattedKey}: ${formattedValue}`;
+      .filter(([key]) => {
+        // Filter out Arabic keys (ending with _ar)
+        return !key.endsWith("_ar");
       })
+      .map(([key, value]) => {
+        // Remove _en suffix if present, then format key
+        const cleanKey = key.endsWith("_en") ? key.slice(0, -3) : key;
+        const formattedKey = cleanKey
+          .replace(/_/g, " ")
+          .split(" ")
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+          .join(" ");
+        
+        // Handle nested objects and arrays with indentation
+        if (typeof value === "object" && value !== null) {
+          if (Array.isArray(value)) {
+            const nestedArray = value
+              .map((item, i) => {
+                if (typeof item === "object" && item !== null) {
+                  const formatted = formatDeliverableContent(item, indentLevel + 1);
+                  return formatted ? `${indent}  ${i + 1}. ${formatted}` : "";
+                }
+                return `${indent}  ${i + 1}. ${String(item)}`;
+              })
+              .filter(line => line.trim().length > 0)
+              .join("\n");
+            
+            if (nestedArray.trim().length === 0) return "";
+            return `${indent}${formattedKey}:\n${nestedArray}`;
+          } else {
+            const nestedContent = formatDeliverableContent(value, indentLevel + 1);
+            if (nestedContent.trim().length === 0) return "";
+            return `${indent}${formattedKey}:\n${nestedContent}`;
+          }
+        }
+        
+        return `${indent}${formattedKey}: ${String(value)}`;
+      })
+      .filter(line => line.trim().length > 0)
       .join("\n");
   }
 

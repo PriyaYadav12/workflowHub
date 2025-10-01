@@ -18,7 +18,7 @@ export default function StrategyGeneratorPage() {
   // load webhook URL persisted by WebhookBar
   useEffect(() => {
     try {
-      const val = localStorage.getItem("strategy-generator:webhook");
+      const val = localStorage.getItem("strategy-generator:webhook") || StrategyGeneratorUrl;
       setWebhookUrl(val || "");
     } catch {}
   }, []);
