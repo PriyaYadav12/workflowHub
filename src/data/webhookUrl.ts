@@ -1,0 +1,1 @@
+export const StrategyGeneratorUrl = "https://n8n.srv1006416.hstgr.cloud/webhook-test/intake";
